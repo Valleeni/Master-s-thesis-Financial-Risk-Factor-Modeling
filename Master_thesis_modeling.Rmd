@@ -1488,13 +1488,6 @@ adf_factor <- function(x, k = 0) {
 adf_results <- t(apply(loss_diff, 2, adf_factor, k = 0)) %>% as.data.frame()
 
 ```
-```{r}
-rownames(gmv_portfolios_daily)
-```
-
-
-
-
 
 
 
