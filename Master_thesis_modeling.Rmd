@@ -1,0 +1,1515 @@
+---
+title: "Characteristic model"
+output: html_document
+date: "2026-04-17"
+---
+
+# Initialize session
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+setwd("Set work directory of choice")
+```
+
+# Libraries
+
+```{r, include = FALSE}
+libs <- c("tidyr", "tidyverse", "dplyr", "lubridate", "ggplot2", "lmtest", "PerformanceAnalytics", "forecast", "corrplot", "regclass", "pcaMethods", "tseries", "tikzDevice", "knitr", "sandwich")
+
+for (i in libs) {
+ library(package=i, character.only=TRUE) 
+}
+
+# options for generating laTex plots
+options(tikzLatex = "~/pdflatex.exe",
+        tikzDefaultEngine = "pdftex",
+        sanitize = TRUE,
+        tikzLatexPackages = c(
+          getOption("tikzLatexPackages"),
+          "\\usepackage{amsmath}",
+          "\\usepackage{amssymb}",
+          "\\usepackage{bm}"
+        ))
+
+tikzDevice::tikzTest()
+
+# LaTex plot converter function
+tex_plot <- function(plot, filename = "plot.tex", width = 6, height = 4) {
+  tikz(filename, 
+       width = width, 
+       height = height, 
+       standAlone = FALSE)
+  
+  print(plot)
+  
+  dev.off()
+}
+
+# Generate nicely formatted summary statistics
+gen_desc_statistics <- function(df, decimals = 4) {
+  sapply(as.data.frame(df), function(x) {
+    c(
+    Max       = round(max(x), decimals),
+    Q3        = round(quantile(x, 0.75, names = FALSE), decimals),
+    Median    = round(median(x, 0.5), decimals),
+    Mean      = round(mean(x), decimals),
+    Q1        = round(quantile(x, 0.25, names = FALSE), decimals),
+    Min       = round(min(x), decimals)
+    )
+  })
+}
+```
+
+
+
+# Load data
+
+```{r}
+# Price series
+# adjusted close prices (dates x tickers)
+adj_close <- read.csv("final_adj_close_prices_aligned.csv", row.names = 1) %>% as.data.frame()
+rownames(adj_close) <- as.Date(rownames(adj_close))
+
+# calculate returns
+returns <- (adj_close / lag(adj_close)) - 1
+
+osebx <- read.csv("xosl_prices.csv", row.names = 1) %>% as.data.frame()
+osebx_adj_close <- osebx$adjusted_close %>% as.data.frame()
+rownames(osebx_adj_close) <- as.Date(rownames(osebx))
+
+osebx_returns <- (osebx_adj_close / lag(osebx_adj_close)) - 1
+
+# Time-series of BM-ratios (dates x tickers)
+value_ts <- read.csv("book-to-market(value)_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(value_ts) <- as.Date(rownames(value_ts))
+
+# Time-series of the logarithms of market capitalizations (dates x tickers)
+size_ts <- read.csv("log_mcap(size)_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(size_ts) <- as.Date(rownames(size_ts))
+
+# Time-series of historical relative momentum (dates x tickers)
+momentum_ts <- read.csv("momentum_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(momentum_ts) <- as.Date(rownames(momentum_ts))
+
+# Time-series of historical short-term reversal (dates x tickers)
+reversal_ts <- read.csv("weekly_reversal_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(reversal_ts) <- as.Date(rownames(reversal_ts))
+
+# Time-series of logarithm 60-day rolling CAPM idiosyncratic volatilities (dates x tickers)
+volatility_ts <- read.csv("log_idio_vol_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(volatility_ts) <- as.Date(rownames(volatility_ts))
+
+# Time-series of 12-month rolling Amihud illiquidity measure (dates x tickers)
+illiquidity_ts <- read.csv("illiquidity_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(illiquidity_ts) <- as.Date(rownames(illiquidity_ts))
+
+# Time-series of 12-month rolling dividend yields (dates x tickers), 0 for tickers who does not pay dividends.
+yield_ts <- read.csv("div_yield_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(yield_ts) <- as.Date(rownames(yield_ts))
+
+# Time-series of 21-day rolling Brent Oil Futures beta (dates x tickers)
+oil.beta_ts <- read.csv("oil_rolling_betas_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(oil.beta_ts) <- as.Date(rownames(oil.beta_ts))
+
+# Time-series of 60-day rolling asset to market beta (dates x tickers)
+market.beta_ts <- read.csv("market_beta_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(market.beta_ts) <- as.Date(rownames(market.beta_ts))
+
+# Time-series of 21-day rolling Brent Oil Futures beta (dates x tickers)
+rate.beta_ts <- read.csv("yield_rolling_betas_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(rate.beta_ts) <- as.Date(rownames(rate.beta_ts))
+
+# Time-series of debt-to-asset ratios (dates x tickers)
+leverage_ts <- read.csv("dtb(leverage)_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(leverage_ts) <- as.Date(rownames(leverage_ts))
+
+# Time-series of asset growth / investment rate (dates x tickers)
+growth_ts <- read.csv("growth_aligned_final.csv", row.names = 1) %>% as.data.frame()
+rownames(growth_ts) <- as.Date(rownames(growth_ts))
+
+# Vanilla market capitalizations
+# Time-series of Market capitalizations (dates x tickers)
+mcap <- read.csv("sqrt_mcap_smooth.csv", row.names = 1) %>% as.data.frame()
+rownames(mcap) <- as.Date(rownames(mcap))
+
+ts_list <- list(returns = returns, 
+                value = value_ts, 
+                size = size_ts, 
+                momentum = momentum_ts, 
+                reversal = reversal_ts, 
+                volatility = volatility_ts, 
+                illiquidity = illiquidity_ts, 
+                yield = yield_ts, 
+                oil_beta = oil.beta_ts, 
+                mkt_beta = market.beta_ts, 
+                rate_beta = rate.beta_ts, 
+                leverage = leverage_ts, 
+                growth = growth_ts, 
+                mcap = mcap) # T x N x K
+
+```
+
+```{r}
+# More data cleaning...
+# We aim for all collected dataframes of the form T x N to have the same structure.
+# By structure, we seek to have the same collection of NAs and dates across dataframes
+start_date <- rownames(ts_list[[10]])[1]  # First date in shortest object
+ts_list <- lapply(ts_list, function(x) {  # Sets the start date for all other entities
+  x[rownames(x) >= start_date, ]
+})
+
+
+# Keep only matching dates across all K time-series
+all_dates <- Reduce(intersect, lapply(ts_list, rownames))
+ts_list <- lapply(ts_list, function(x) x[rownames(x) %in% all_dates, ])
+
+# Keep only common tickers across K characteristic observations
+all_tickers <- Reduce(intersect, lapply(ts_list, colnames))
+ts_list <- lapply(ts_list, function(x) x[, colnames(x) %in% all_tickers])
+
+# Make sure all K time-series have identical NA structure
+na_union <- is.na(ts_list[[1]])
+
+for (i in 2:length(ts_list)) {
+  na_union <- na_union | is.na(ts_list[[i]])
+}
+
+ts_list <- lapply(ts_list, function(x) {
+  x[na_union] <- NA
+  x
+})
+
+na_first <- is.na(ts_list[[1]])
+
+ifelse(all(sapply(ts_list, function(x) identical(is.na(x), na_first))),
+       print("All time-series objects share NA structure"),
+       print("Not all time-series objects share NA structure!"))
+
+# Some rows are still rows filled completely with NAs
+# All time-series have same NA structure from NA intersect
+keep_rows <- rowSums(!is.na(ts_list[[1]])) > 0
+
+cat("dropping", sum(!keep_rows), "NA dates out of", length(keep_rows), "\n")
+
+ts_list <- lapply(ts_list, function(x) x[keep_rows, , drop = FALSE])
+
+```
+
+```{r}
+# Inspect
+lapply(ts_list, dim)
+```
+
+```{r}
+dates <- rownames(ts_list$returns)
+
+from <- dates[1]
+to <- dates[length(dates)]
+sprintf("The final data ranges from %1$s to %2$s", from, to)
+```
+
+# Cross-sectional regression
+
+```{r}
+# Define winsorization function (only keep factor values between the 1st and 
+# -99th percentile for each cross-section).
+winsorize <- function(x, lower = 0.01, upper = 0.99) {
+  x = as.numeric(x)
+  q = quantile(x, c(lower, upper), na.rm = TRUE)
+  x[x < q[1]] = q[1]
+  x[x > q[2]] = q[2]
+  x
+}
+
+
+# Combine and transform time-series to a collection ordered cross-sections.
+cs_list <- lapply(1:nrow(ts_list$returns), function(i) {
+  
+  # Extract cross-section of mcaps, returns and trading volume
+  mcap_i = as.numeric(ts_list$mcap[i,])
+  w = mcap_i / sum(mcap_i, na.rm = TRUE) # Cross-section market cap weights
+  
+  returns_i = as.numeric(ts_list$returns[i, ])
+  
+  # Leave out mcap, returns and volume
+  factor_id = setdiff(names(ts_list), c("returns", "mcap")) 
+  
+  # Winsorize -> standardize
+  cs_std <- lapply(factor_id, function(x) {
+    
+    factor = as.numeric(ts_list[[x]][i,]) # vector of factor
+    factor = winsorize(factor) # winsorize the factors
+    
+    A = factor - sum(w * factor, na.rm = TRUE) # Subtract the market weighted mean
+    B = sqrt(length(factor)) * A / sqrt(sum(A**2, na.rm = TRUE)) # scale
+    B
+  })
+  
+  names(cs_std) = factor_id
+  tickers = colnames(ts_list$returns)
+  
+  # Store a single cross-section of factors
+  data.frame(
+    returns = returns_i,
+    value = cs_std$value,
+    size = cs_std$size,
+    momentum = cs_std$momentum,
+    reversal = cs_std$reversal,
+    volatility = cs_std$volatility,
+    illiquidity = cs_std$illiquidity,
+    yield = cs_std$yield,
+    oil_beta = cs_std$oil_beta,
+    mkt_beta = cs_std$mkt_beta,
+    rate_beta = cs_std$rate_beta,
+    leverage = cs_std$leverage,
+    growth = cs_std$growth,
+    mcap = mcap_i,
+    row.names = tickers
+  )
+})
+
+cs_dates <- as.Date(rownames(ts_list$returns))
+names(cs_list) <- cs_dates
+
+# Cross-sectional regression with mcap weights
+# The object below contains a collection of linear models, each estimated on a 
+# - cross section for a corresponding date.
+lm_results_mcap <- lapply(cs_list, function(cs) {
+  lm(
+    returns ~ value + size + momentum + reversal + volatility + illiquidity + 
+      yield + oil_beta + mkt_beta + rate_beta + leverage + growth,
+    data = cs,
+    weights = as.numeric(mcap),
+    na.action = na.omit
+  )
+})
+```
+
+
+## Residuals / Idioyncratic returns
+
+```{r}
+dates   <- as.Date(rownames(ts_list$returns))
+tickers <- colnames(ts_list$returns)
+
+T_len <- length(lm_results_mcap)
+N    <- length(tickers)
+
+res_mat <- matrix(NA_real_, nrow = T_len, ncol = N) # Fill NAs where no residual is estimated. (example: a ticker were not active at time t)
+rownames(res_mat) <- dates
+colnames(res_mat) <- tickers
+
+for (t in seq_len(T_len)) {
+  reg.fit <- lm_results_mcap[[t]]
+
+  resid <- as.numeric(reg.fit$residuals)
+  used_tickers <- names(reg.fit$residuals)
+  
+  col_idx <- match(used_tickers, tickers)   # Maintain indexing and naming integrity
+  res_mat[t, col_idx] <- resid
+}
+
+res <- as.data.frame(res_mat)
+rownames(res) <- as.Date(dates)
+```
+
+
+
+
+# Plot of factor returns
+
+## Whole period
+
+
+```{r}
+factor_returns <- t(sapply(lm_results_mcap, coef)) %>% as.data.frame()
+rownames(factor_returns) <- dates
+factor_lr <- log(1 + factor_returns) # Convert to log returns
+
+fr_cum_returns <- apply(factor_lr, 2, cumsum) %>% as.data.frame()
+
+fr_cum_returns$date <- as.Date(dates)
+
+# LaTex does not like underscores "_"
+fr_cum_returns <- fr_cum_returns %>% rename(
+  `market intercept` = `(Intercept)`,
+  `oil beta` = oil_beta,
+  `market beta` = mkt_beta,
+  `rate beta` = rate_beta
+)
+
+# Transform to long format for plotting
+fr_long <- fr_cum_returns %>% pivot_longer(cols = -date, 
+                                           names_to  = "factor", 
+                                           values_to = "value")
+
+# Plot factor returns
+fr_cum_returns_plot_single <- 
+  ggplot(fr_long, aes(x = date, y = value, colour = factor)) +
+  geom_line(alpha = 0.8, linewidth = 1) +
+  labs(
+    title = "Daily cumulative factor returns (log returns)",
+    x     = "Year",
+    y     = "Factor returns",
+    colour = "Factors"
+  ) +
+  theme_minimal()
+
+fr_cum_returns_plot_single
+```
+
+```{r}
+tex_plot(fr_cum_returns_plot_single, filename = "single_plot_factor_returns.tex", width = 6, height = 4)
+```
+
+
+```{r, fig.width=10, fig.height=7}
+fr_cum_returns_plot_multi <- 
+  ggplot(fr_long, aes(x = date, y = value)) +
+  geom_line(color = "steelblue") +
+  facet_wrap(~ factor, scales = "free_y", ncol = 2) +
+  labs(
+    title = "Daily cumulative factor realisations (log returns)",
+    x     = "Year",
+    y     = "Return"
+  ) +
+  theme_minimal()
+
+fr_cum_returns_plot_multi
+```
+
+
+```{r, fig.width=10, fig.height=7}
+tex_plot(fr_cum_returns_plot_multi, "multi_plot_factor_returns.tex", width = 6, height = 8)
+```
+
+# Average R-Squared
+
+```{r}
+r.sq <-sapply(lm_results_mcap, function(r) {
+  summary(r)$adj.r.squared
+  })
+
+gen_desc_statistics(r.sq)
+```
+
+
+```{r}
+r.sq <- sapply(lm_results_mcap, function(r) summary(r)$adj.r.squared)
+
+historical_r_squared <- data.frame(
+  date     = as.Date(names(r.sq)),
+  adj_r2   = as.numeric(r.sq)
+)
+historical_r_squared$smoothed <- as.numeric(fitted(ses(historical_r_squared$adj_r2, alpha = 1 - 0.95)))
+
+historical_r.sqr <- 
+  ggplot(historical_r_squared, aes(x = date)) +
+  geom_line(aes(y = adj_r2), alpha = 0.1, linewidth = 0.4) +
+  geom_line(aes(y = smoothed), color = "steelblue", linewidth = 0.9) +
+  labs(title = "Historical R2", x = "Year", y = "R2") +
+  theme_minimal()
+
+historical_r.sqr
+```
+```{r}
+tex_plot(historical_r.sqr, "historical_r_squared_smoothed.tex", width = 6, height = 4)
+```
+
+# Historical Variance Inflation
+
+```{r, fig.width=7, fig.height=7}
+# 
+dates <- rownames(ts_list$returns)
+
+# Calculate variance inflation per cross-section
+vif_list <- lapply(lm_results_mcap, VIF) # 
+vif_mat  <- do.call(rbind, vif_list)
+rownames(vif_mat) <- dates
+
+
+vif_long <- as.data.frame(vif_mat) %>% rename(
+    `oil beta` = oil_beta,
+    `market beta` = mkt_beta,
+    `rate beta` = rate_beta
+    ) %>%
+  mutate(date = as.Date(rownames(vif_mat))) %>%
+  pivot_longer(
+    cols      = -date,
+    names_to  = "factor",
+    values_to = "vif"
+  )
+
+# Subplots of Variance inflation of each factor (0-1 very low, 1-5 low, 5-10 moderate, 10 < severe mutlicoll)
+ts_vif <- 
+  ggplot(vif_long, aes(x = date, y = vif)) +
+  geom_line(color = "steelblue") +
+  geom_hline(yintercept = 5, linetype = "dashed", color = "red", alpha = 0.7) +
+  facet_wrap(~ factor, scales = "free_y", ncol = 2) +
+  labs(
+    title = "Time-series of daily VIFs per factor",
+    x     = "Year",
+    y     = "Variance Inflation Factor (VIF)"
+  ) +
+  theme_minimal()
+
+ts_vif
+```
+
+
+```{r, fig.width=7, fig.height=7}
+tex_plot(ts_vif, "ts_vif.tex", width = 6, height = 8)
+```
+
+
+
+```{r}
+gen_desc_statistics(vif_mat, decimals = 2) %>% t()
+```
+
+
+
+# Hypothesis testing
+
+## ADF-test for stationarity
+
+```{r}
+adf_factor <- function(x, k = 0) {
+  x <- as.numeric(x)
+  x <- x[is.finite(x)]
+  test <- adf.test(x, k = k)
+  c(`t-statistic` = unname(test$statistic),
+    `p-value`   = test$p.value)
+}
+
+
+adf_results <- t(apply(factor_returns, 2, adf_factor, k = 0)) %>% as.data.frame()
+adf_results %>% as.data.frame()
+```
+
+
+
+### Visual inspection
+
+```{r}
+fr <- factor_returns
+fr$date <- as.Date(dates)
+
+fr_long <- fr %>% pivot_longer(cols = -date, names_to  = "factor", values_to = "value")
+
+ggplot(fr_long, aes(x = date, y = value)) +
+  geom_line(color = "steelblue") +
+  facet_wrap(~ factor, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Daily factor realisations",
+    x     = "Date",
+    y     = "Return"
+  ) +
+  theme_minimal()
+```
+
+
+# Distribution of market capitalizations
+
+```{r}
+nok_mcap <- read.csv("mcap.csv", row.names = 1)
+rownames(nok_mcap) <- as.Date(rownames(nok_mcap))
+nok_mcap <- nok_mcap[, colnames(ts_list$returns)]
+
+mcap_dist_last_date <- data.frame(mcaps = as.numeric(nok_mcap["2025-12-30", ]) / 1e9)
+
+mcap_dist <- 
+  ggplot(mcap_dist_last_date, aes(x = mcaps)) +
+  geom_histogram(bins = 10, fill = "#fd5704", colour = "white") +
+  scale_x_log10(
+    breaks = c(0.1, 1, 10, 100, 1000),
+    labels = c("0.1", "1", "10", "100", "1000")
+  ) +
+  labs(
+    title = "Distribution of market capitalizations (OSEBX, 2025-12-30)",
+    x = "Market capitalization in Billions (NOK) log10 scale",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+
+mcap_dist
+```
+```{r}
+tex_plot(mcap_dist, filename = "mcap_dist.tex", width = 6, height = 4)
+```
+
+
+# Walk-forward OOS Model comparison of GMV Realized variance
+
+```{r}
+# Extract sufficient sample
+extract_effective_sample <- function(residuals, # T x N Residuals estimated from iterated WLS 
+                                     lambda     # EWMA smoothing parameter
+                                     ) {
+    # This function finds the tickers that were last active and has a sufficient number of observations.
+    # It might seem that this function benefits the characteristic model the most since it is based on its residuals.
+    # However, the same return data should exist for the PCA model as well, introducing SVD/EM-based imputation to a time-series where missing data is usually structural -
+    # can cause severe bias. The sufficient observation limit set through the half-life therefore benefits both models on what can be assumed to provide equal footing.
+  
+    dates_is = as.Date(rownames(residuals))
+    
+    # residuals
+    res_is = residuals %>% as.xts(dates_is)
+    
+    half_life = log(0.5) / log(lambda)
+    min_obs = as.integer(half_life * 10) # Rounds float value
+    
+    # We must have sufficient observations to calculate the EWMA covariance matrix.
+    # We use the EWMA half-life to create an minimum n-observations rule.
+    # Typical smoothing parameter
+    # Half-life is approximately 13 days.
+    # Tickers sufficiently active near end (must be 10 times half-life implied by lambda to be considered sufficient number of obs.)
+    
+    last_row = tail(res_is, 1)
+    last_active = colnames(last_row)[!is.na(coredata(last_row))]
+    
+    idx_tail = (nrow(res_is) - min_obs + 1):nrow(res_is)
+    n_obs_tail = colSums(!is.na(res_is[idx_tail, last_active]))
+
+    
+    good_tickers = names(n_obs_tail)[n_obs_tail >= min_obs]
+    
+    good_tickers
+}
+
+gmv_weights <- function(factor_cov,           # K x K
+                        idio_var,             # N x N, diagonal entries only
+                        factor_loadings       # N x K
+                        ) {
+  
+  # This function calculates the GMV portfolio by using the woodbury inverse
+  
+  B = factor_loadings
+  ticker_names = rownames(factor_loadings)
+  F_c = factor_cov
+  I = idio_var # must be diagonal
+  
+  inv_F = solve(F_c)
+  inv_I = solve(I)
+  X = solve(I, B)
+  
+  # Woodbury inverse for numerical stability
+  full_inv.mtx = inv_I - X %*% solve(inv_F + t(B) %*% inv_I %*% B) %*% t(X)
+  
+  ones = rep(1, nrow(full_inv.mtx)) # column vector of ones
+  
+  over = (full_inv.mtx %*% ones)
+  under = as.numeric(t(ones) %*% full_inv.mtx %*% ones)
+  
+  gmv_w = over / under
+  rownames(gmv_w) = ticker_names
+  
+  gmv_w
+  }
+
+
+# Fetch loadings by date
+loadings_by_date <- function(cs_slice_date,     # YYYY-MM-DD
+                             tickers,   # List of sufficient tickers 
+                             factors
+                             ) {
+  
+  cs = cs_list[[as.character(cs_slice_date)]]
+  cs$`(Intercept)` = rep(1, nrow(cs))
+  
+  # Factor loadings for the cross-section given by (date)
+  B = cs[tickers, factors] %>% as.matrix()
+  B
+  }
+
+
+
+# Calculate Exponoentially smoothed idio variance
+idio_var_calc <- function(idio_returns,
+                          lambda
+                          ) {
+  
+  res_list <- lapply(colnames(idio_returns), function(sym) idio_returns[, sym])
+  names(res_list) <- colnames(idio_returns)
+  
+  half_life = log(0.5) / log(lambda)
+  min_obs = as.integer(half_life * 10)
+  
+  idio_var_ses = sapply(names(res_list), function(ticker) {
+    eps_j = res_list[[ticker]]
+    eps_j = eps_j[!is.na(eps_j)]
+    
+    if (length(eps_j) < min_obs) return(NA_real_)
+    
+    y = eps_j**2 # Realized idio variance
+    
+    # We use the forecast-package Simple exponential smoothing
+    fit = ses(y, h = 1, alpha = (1 - lambda)) # Simple exponential smoothing        
+    
+    # Exponentially smoothed idiosyncratic variance
+    idio_var = as.numeric(tail(fitted(fit), 1))     
+  })
+  # Return smoothed idio variance
+  idio_var_ses
+}
+
+
+
+# Perform characteristic risk-decomposition
+characteristic_gmv <- function(cs_slice_date,      # YYYY-MM-DD
+                               cs_list,            # N x K x T
+                               factor_returns,     # T x K
+                               residual_returns,   # T x K
+                               good_tickers,       # List of tickers with sufficient data
+                               lambda,              # EWMA Smoothing parameter
+                               mcap
+                               ) {
+
+      
+  dates = as.Date(rownames(factor_returns))
+  sample_idx  = dates <= as.Date(cs_slice_date)
+  
+  factor_names = names(factor_returns)
+
+  # returns factor cov, loadings, and diag idio variances at time t-1
+  factor_returns = factor_returns[sample_idx, ] %>% as.matrix()
+  
+  idio_returns = residual_returns[sample_idx, good_tickers] %>% as.matrix()
+  stopifnot(identical(colnames(idio_returns), good_tickers))
+  
+  # Calculate EWMA factor covariance up to time t-1
+  # Performance analytics EWMA covariance
+  f_cov = M2.ewma(factor_returns, lambda = lambda, as.mat = TRUE) 
+  
+  # Calculate EWMA factor covariance up to time t-1
+  idio_var = idio_var_calc(idio_returns, 
+                           lambda = lambda
+                           ) %>% as.matrix()
+  
+  idio_var = diag(as.numeric(idio_var))
+  
+  # 
+  mcap_vec = as.numeric(mcap[as.character(cs_slice_date), good_tickers])
+  stopifnot(
+    !any(is.na(mcap_vec)),
+    length(mcap_vec) == length(good_tickers)
+  )
+  sqrt_mcap = diag(mcap_vec)
+  
+  
+  B = loadings_by_date(cs_slice_date, tickers = good_tickers, factor_names)
+  B = B %>% as.matrix()
+  stopifnot(identical(rownames(B), good_tickers))
+  
+  # The factor covariance is biased by WLS construction and the use of an incorrect proxy. 
+  # The bias correction can be defined as:
+  bias = solve(t(B) %*%  sqrt_mcap %*% B) %*% 
+    (t(B) %*% sqrt_mcap %*% idio_var %*% sqrt_mcap %*% B ) %*% 
+    solve(t(B) %*% sqrt_mcap %*% B)
+  
+  unbiased_f_cov = f_cov - bias
+  
+  # Guarantee PSD (Eigenvalue clipping)
+  eig <- eigen(unbiased_f_cov, symmetric = TRUE)
+  if (any(eig$values < 0)) {
+    eig$values[eig$values < 1e-10] <- 1e-10 #
+    unbiased_f_cov <- eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+  }
+  
+  gmv_w = gmv_weights(factor_cov = unbiased_f_cov, 
+                      idio_var = idio_var, 
+                      factor_loadings = B
+                      )
+  
+  stopifnot(sum(good_tickers != rownames(gmv_w)) == 0)
+            
+  gmv_w
+ }
+
+# Generate exponential weighting matrix for PCA estimation
+exp_weight <- function(T_len,   # Time length
+                       tau      # Exponential smoothing parameter, not to be confused with EWMA
+                       ) {
+  t_vec = 1:T_len
+  w = exp(-(T_len - t_vec + 1) / tau)
+  kappa = sqrt(T_len / sum(w**2))   
+  kappa * w 
+  # returns w where sum(w^2) = T is true. Eigenvalues are scale invariant, which is why we try to correct the sum of the data back to the orignal scale
+}
+
+# Retrieve model information criterions from PCA factor model
+factor_IC_criterions <- function(R, 
+                                 max_factors = 100
+                                 ) {
+  # Center
+  R = sweep(R, 1, rowMeans(R), "-")
+  
+  svd_res = svd(R)
+  U = svd_res$u
+  s = svd_res$d
+  V = svd_res$v
+  
+  N = nrow(R)
+  T_len = ncol(R)
+  r_max = min(N, T_len, max_factors, length(s))
+  
+  
+  IC1 = numeric(r_max)
+  IC2 = numeric(r_max)
+  IC3 = numeric(r_max)
+  
+  for (k in seq_len(r_max)) {
+    U_k = U[, 1:k, drop = FALSE]
+    V_k = V[, 1:k, drop = FALSE]
+    s_k = s[1:k]
+    
+    resid = R - U_k %*% (s_k * t(V_k))
+    NSSR  = sum(resid**2) / (N * T_len)
+    
+    # Bai & Ng (2002)
+    IC1[k] = log(NSSR) + k * ((N + T_len) / (N * T_len)) * log((N * T_len) / (N + T_len))
+    IC2[k] = log(NSSR) + k * ((N + T_len) / (N * T_len)) * log(min(N, T_len)) # IC2 tended identify the true number of factors in Bai & Ng (2002)
+    IC3[k] = log(NSSR) + k * (log(min(N, T_len)) / min(N, T_len)) # Tends to overparameterize
+  }
+  
+  data.frame(IC1 = IC1, IC2 = IC2, IC3 = IC3, row.names = seq_len(r_max))
+}
+
+# Perform statistical risk-decomposition
+statistical_gmv <- function(returns,            # T x N
+                            window_size,        # Window  
+                            good_tickers,       # List of sufficient tickers
+                            lambda_fast,        # Smoothing parameter for modeling vol
+                            lambda_slow,        # Smoothing parameter for modeling cor
+                            whitening_factors,  # Choose n factors for heteroskedasticity remedy
+                            IC                  # Choose 1, 2 or 3 (int) for model criteria
+                            ) {
+  tot_obs = nrow(returns)
+  window  = window_size
+  w_start = tot_obs - window + 1
+  w_end   = tot_obs
+  win_idx = w_start:w_end
+  
+  # Returns effective window
+  R_win = returns[win_idx, good_tickers]
+
+  # Number of factors for imputation
+  p = min(nrow(R_win), ncol(R_win)) # Max avail factors
+  
+  
+  pct_missing = (sum(is.na(R_win))) / length(R_win) # Report fraction of missing values
+   
+  # Scaling
+  R_scaled  = scale(R_win)
+  R_mu      = attr(R_scaled, "scaled:center")    # Column means
+  R_sig     = attr(R_scaled, "scaled:scale")     # Column stds
+
+  n_imp_factors = round(0.2 * p) # basing 20% giving lowest error in SVDImpute (article)
+  
+  R_imp = completeObs(pca(R_scaled, method = "svdImpute", nPcs = n_imp_factors))
+  
+  R_imp = sweep(sweep(R_imp, 2, R_sig, "*"), 2, R_mu, "+")
+  
+  R = t(R_imp) # Important to note that the returns matrix is now N x T in dimension
+  
+  # Data is transposed such that the the singular value decomposition of R returns
+  # - U as the cross sectional dimension, S with singular values, and V with the time dimension.
+  
+  # Data dimensions
+  N     = nrow(R)
+  T_len = ncol(R)
+  
+  
+  # This section establishes weights for estimating idiosyncratic volatility
+  # It is possible to decide how fast volatility spikes occur or
+  # Assume that volatility is fast changing we set the half-life to 3 days
+  # See DCC-GARCH for more information regarding dynamic conditional correlations
+
+  tau_fast = -(1 / log(lambda_fast)) 
+  
+  weights_fast = exp_weight(T_len, tau_fast)
+  weights_fast = diag(weights_fast)
+  
+  R_tilde = R %*% weights_fast  # N x T
+  
+  # First stage SVD 
+  # First stage concerns cleaning the data or turning it close to homoscedastic.
+  # -which improve the conditions of factor extraction (Boivin & Ng, 2006).
+  svd_1 = svd(R_tilde)
+
+  # Choose a conservative number of factors for whitening
+  k_factors <- whitening_factors
+  
+  U_k = svd_1$u[, 1:k_factors, drop = FALSE]              # N x K
+  S_k = svd_1$d[1:k_factors]                              # K x K, min(N,T) = K
+  V_k = svd_1$v[, 1:k_factors, drop = FALSE]              # T x K
+  
+  E = R_tilde - U_k %*% (S_k * t(V_k))
+
+  # Estimate idiosyncratic volatility
+  idio_var  = rowMeans(E**2)
+  idio_vol   = sqrt(idio_var)
+  idio_vol = pmax(idio_vol, 1e-10) # safe floor idio vol
+  weights_iv = diag(1 / idio_vol)
+  
+  # same smoothing as  EWMA for the Characteristic model
+  tau_slow =  -(1 / log(lambda_slow))
+  
+  weights_slow = exp_weight(T_len, tau_slow)
+  weights_slow = diag(weights_slow)
+  
+  R_hat = weights_iv %*% R %*% weights_slow
+  R_id  = weights_iv %*% R
+  
+  # Calculate ICs
+  IC_vals <- factor_IC_criterions(R_id, max_factors = 30)
+  
+  stopifnot(IC %in% 1:3)
+  
+  p_factors = which.min(IC_vals[[IC]]) # Chosen number of factors after whitening
+  
+  
+  # Second stage PCA 
+  svd_2 = svd(R_hat)
+
+  U_p = svd_2$u[, 1:p_factors, drop = FALSE]                     # N x p
+  S_p = diag(svd_2$d[1:p_factors])                               # p x p
+  V_p = svd_2$v[, 1:p_factors, drop = FALSE]                     # T x p
+  
+  eigenvalues_final <- (svd_2$d**2) / ncol(R_hat)   
+  
+  noise_bulk = eigenvalues_final[(p_factors+1):length(eigenvalues_final)]
+  mean_noise = mean(noise_bulk)
+  
+  eigenv_shrinked = eigenvalues_final
+  eigenv_shrinked[1:p_factors] = pmax(eigenvalues_final[1:p_factors] - mean_noise, 0)
+  eigenv_shrinked[(p_factors+1):length(eigenvalues_final)] = mean_noise
+  
+  
+  eigen_spikes = eigenv_shrinked[1:p_factors]
+  
+  idio_variance = mean_noise * diag(idio_var)
+  
+  B = solve(weights_iv) %*% U_p   
+  rownames(B) = good_tickers
+  
+  gmv_w = gmv_weights(factor_cov = diag(eigen_spikes), idio_var = idio_variance, factor_loadings = B)
+  
+  factor_var_scaled_back = diag(B %*% diag(eigen_spikes) %*% t(B))
+  
+  var_explained = sum(factor_var_scaled_back) / (sum(factor_var_scaled_back) + sum(idio_variance))
+  
+  list(weights = gmv_w, k_factors = p_factors, returns_imputed = R_imp, var_explained = var_explained)
+}
+
+
+normalize_weights_sum <- function(weights, 
+                              returns
+                              ) {
+  # It may be that active tickers are delisted at the forecast date.
+  # This function normalizes the forecasted GMV weights_{t-1} so that the 
+  # - portfolio is fully invested at time t
+  returns_aligned = returns[rownames(weights)]
+  alive_t = !is.na(returns_aligned) # Listed tickers at forecast horizon t
+  weights_adj = weights[alive_t] / sum(weights[alive_t])
+  sum(weights_adj * returns_aligned[alive_t])
+}
+
+sample_gmv = function(returns, 
+                      window_size, 
+                      good_tickers
+                      ) {
+  
+  tot_obs = nrow(returns)
+  win_idx = (tot_obs - window_size + 1):tot_obs
+  R_win = returns[win_idx, good_tickers]
+  
+  vanilla_cov = cov(R_win, use = "pairwise.complete.obs")
+  
+  # Pairwise covariance may not be postive semi-definite
+  eig = eigen(vanilla_cov, symmetric = TRUE)
+  if (any(eig$values < 1e-10)) {
+    eig$values[eig$values < 1e-10] = 1e-10
+    vanilla_cov = eig$vectors %*% diag(eig$values) %*% t(eig$vectors)
+  }
+  
+  vanilla_cov_inv = solve(vanilla_cov + diag(1e-10, nrow(vanilla_cov)))
+  ones = rep(1, nrow(vanilla_cov))
+  w = (vanilla_cov_inv %*% ones) / as.numeric(t(ones) %*% vanilla_cov_inv %*% ones)
+  rownames(w) = good_tickers
+  w
+}
+
+# Walk forward comparison
+walk_forward_compare <- function(oos_observations = 250,    # Set OOS window
+                                 cs_list,                   # N x K x T
+                                 returns,                   # T x N
+                                 factor_returns,            # T x K
+                                 residuals,                 # T x N
+                                 pca_window,                # Window for rolling PCA
+                                 lambda,                    # EWMA smoothing parameter
+                                 mcap                       # Market cap for Characteristic shrinkage
+                                 ) {
+  # The goal of the function is to compare OOS GMV-RV of two models (characteristic and statistical factor model).
+  # The two models decomposes asset risk into systematic and unsystematic risk.
+  # The decomposition be used to estimate the covariance matrix of asset returns, with more stability than regular sample covariance. 
+  # Observations are exponentially weighted, hence one can define an appropriate half-life
+  
+  # Check if dates match
+  dates_r = as.Date(rownames(returns))
+  dates_fr = as.Date(rownames(factor_returns))
+  dates_resid = as.Date(rownames(residuals))
+  
+  if (!all(dates_r == dates_fr) || !all(dates_r == dates_resid)) {
+    stop("Dates between returns, factor returns and residuals must be identical!")
+  }
+  
+  # Define the effective in-sample and out-of-sample periods
+  return_dates = as.Date(rownames(returns))
+  total_dates = length(return_dates)
+  
+  stopifnot(oos_observations < total_dates)
+  
+  is_return_dates = return_dates[1:(total_dates - oos_observations)]
+  oos_return_dates = return_dates[(total_dates - oos_observations + 1) : total_dates]
+  
+  print_response_is = sprintf("In-sample period: from %1$s to %2$s", 
+                              is_return_dates[1], 
+                              is_return_dates[length(is_return_dates)])
+  
+  print_response_oos = sprintf("Out-of-sample period: from %1$s to %2$s", 
+                               oos_return_dates[1], 
+                               oos_return_dates[oos_observations])
+  
+  is_end_date = is_return_dates[length(is_return_dates)]
+  oos_start_date = oos_return_dates[1]
+  is_end = as.Date(is_end_date)
+  oos_start = as.Date(oos_start_date)
+
+  oos_pos = (length(is_return_dates) + 1) : total_dates
+  
+  # Empty dataframe for storing realized variances/vol
+  portfolio_daily_returns = data.frame(
+    characteristic     = rep(NA_real_, oos_observations),
+    statistical        = rep(NA_real_, oos_observations),
+    naive              = rep(NA_real_, oos_observations),
+    char_leverage      = rep(NA_real_, oos_observations),
+    stat_leverage      = rep(NA_real_, oos_observations),
+    naive_leverage     = rep(NA_real_, oos_observations),
+    good_tickers_avail = rep(NA_real_, oos_observations),
+    stat_N_factors     = rep(NA_real_, oos_observations),
+    stat_var_explained = rep(NA_real_, oos_observations),
+    row.names          = as.Date(oos_return_dates)
+  )
+  
+  oos_returns = returns[oos_return_dates, ]
+  
+  # Add progress bar
+  pb = txtProgressBar(min = 0, max = length(oos_pos), style = 3)
+  
+  # Extract rolling window
+  for (i in seq_along(oos_pos)) {
+    t = oos_pos[i]
+    is_slice = 1:(t-1)
+    cs_slice_date = return_dates[t-1]
+    
+    
+    returns_active = returns[is_slice, , drop = FALSE]
+    fr_is = factor_returns[is_slice, , drop = FALSE]
+    res_is = residuals[is_slice, , drop = FALSE]
+  
+    
+    good_tickers = extract_effective_sample(res_is, lambda)
+    
+    # Calculate portfolio weights
+    characteristic_weights = characteristic_gmv(cs_slice_date = cs_slice_date,
+                                                cs_list = cs_list,
+                                                factor_returns = fr_is,
+                                                residual_returns = res_is,
+                                                good_tickers = good_tickers,
+                                                lambda = lambda,
+                                                mcap = mcap
+                                                )
+    
+    stat_results = statistical_gmv(returns = returns_active,
+                                   window_size = pca_window,
+                                   good_tickers = good_tickers,
+                                   lambda_fast = lambda,
+                                   lambda_slow = lambda,
+                                   whitening_factors = 13,
+                                   IC = 3
+                                   )
+    
+    stat_weights = stat_results$weights
+    stat_k_factors = stat_results$k_factors
+    var_explained = stat_results$var_explained
+    
+    naive_weights = sample_gmv(stat_results$returns_imputed,
+                               good_tickers = good_tickers,
+                               window_size = pca_window
+                               )
+    
+    returns_active_t = as.numeric(returns[t, good_tickers])
+    names(returns_active_t) = good_tickers
+    
+    # Realized variance at i generated by characteristic portfolio
+    
+    
+    
+    portfolio_daily_returns$characteristic[[i]] = normalize_weights_sum(
+      characteristic_weights,
+      returns_active_t
+    )
+    
+    # Realized variance at i generated by statistical portfolio
+    portfolio_daily_returns$statistical[[i]] = normalize_weights_sum(
+      stat_weights,
+      returns_active_t
+    )
+    
+    
+    
+    portfolio_daily_returns$naive[[i]] = normalize_weights_sum(
+      naive_weights,
+      returns_active_t
+    )
+    
+    
+    portfolio_daily_returns$good_tickers_avail[[i]] = length(good_tickers)
+    portfolio_daily_returns$stat_N_factors[[i]] = stat_k_factors
+    portfolio_daily_returns$stat_var_explained[[i]] = var_explained
+    
+    # Record leverage at time t-1
+    portfolio_daily_returns$char_leverage[[i]] = sum(abs(characteristic_weights))
+    portfolio_daily_returns$stat_leverage[[i]] = sum(abs(stat_weights))
+    portfolio_daily_returns$naive_leverage[[i]] = sum(abs(naive_weights))
+    
+    cat("Slice date:", cs_slice_date, "\n")
+    setTxtProgressBar(pb, i)
+  }
+  
+  close(pb)
+  
+  # Return daily GMV-portfolios returns
+  portfolio_daily_returns
+}
+```
+
+
+```{r}
+nrow(returns[252:nrow(returns), ] )
+```
+
+
+
+```{r, include=FALSE}
+returns <- ts_list$returns
+rownames(returns) <- as.Date(rownames(returns))
+
+gmv_portfolios_daily <- walk_forward_compare(oos_observations = 1455,  
+                                             cs_list = cs_list,                   
+                                             returns = returns,               
+                                             factor_returns = factor_returns,     
+                                             residuals = res,             
+                                             pca_window = 252,            
+                                             lambda = 0.95,
+                                             mcap = mcap
+                                             )
+```
+
+
+# Results
+
+```{r}
+write.csv(gmv_portfolios_daily, file = "gmv_portfolios_daily.csv")
+```
+
+```{r}
+
+gmv_portfolios_daily <- read.csv("gmv_portfolios_daily.csv", row.names = 1)
+
+annual_summary <- gmv_portfolios_daily %>%
+  tibble::rownames_to_column("date") %>%
+  mutate(
+    date = as.Date(date),
+    year = as.integer(format(date, "%Y"))
+  ) %>%
+  group_by(year) %>%
+  summarise(
+
+    # Annualized volatility
+    vol_char            = sd(characteristic, na.rm = TRUE) * sqrt(252),
+    vol_stat            = sd(statistical, na.rm = TRUE) * sqrt(252),
+    vol_naive           = sd(naive, na.rm = TRUE) * sqrt(252),
+
+    vol_ratio_stat_char  = vol_stat  / vol_char,
+    vol_ratio_naive_char = vol_naive / vol_char,
+    
+    char_leverage = mean(char_leverage),
+    stat_leverage = mean(stat_leverage),
+    naive_leverage = mean(naive_leverage),
+    
+  
+    .groups = "drop"
+  )
+
+annual_summary
+```
+
+```{r}
+dates <- rownames(gmv_portfolios_daily)
+
+from <- dates[1]
+to <- dates[length(dates)]
+sprintf("The final data ranges from %1$s to %2$s", from, to)
+```
+
+```{r}
+# Number of tickers that make the effective sample size for each forecast.
+sample_n_tickers <- gen_desc_statistics(gmv_portfolios_daily$good_tickers_avail)
+
+sample_n_tickers
+```
+```{r}
+stat_var_explained <- gen_desc_statistics(gmv_portfolios_daily$stat_var_explained)
+
+stat_var_explained
+```
+
+```{r}
+
+historical_var_explained <- data.frame(
+  date     = as.Date(rownames(gmv_portfolios_daily)),
+  var_exp   = as.numeric(gmv_portfolios_daily$stat_var_explained)
+)
+historical_var_explained$smoothed <- as.numeric(fitted(ses(gmv_portfolios_daily$stat_var_explained, alpha = 1 - 0.95)))
+
+historical_var_explained_plot <- 
+  ggplot(historical_var_explained, aes(x = date)) +
+  geom_line(aes(y = var_exp), alpha = 0.1, linewidth = 0.4) +
+  geom_line(aes(y = smoothed), color = "steelblue", linewidth = 0.9) +
+  labs(title = "Historical Variance Explained", x = "Year", y = "Variance Explained") +
+  theme_minimal()
+
+historical_var_explained_plot
+```
+
+```{r}
+tex_plot(historical_var_explained_plot, filename = "hist_var_explained.tex", width = 6, height = 4)
+```
+
+
+```{r}
+annual_summary <- gmv_portfolios_daily %>%
+  tibble::rownames_to_column("date") %>%
+  mutate(
+    date = as.Date(date),
+    year = as.integer(format(date, "%Y"))
+  ) %>%
+  group_by(year) %>%
+  summarise(
+    vol_char  = sd(characteristic, na.rm = TRUE) * sqrt(252),
+    vol_stat  = sd(statistical,    na.rm = TRUE) * sqrt(252),
+    vol_naive = sd(naive,          na.rm = TRUE) * sqrt(252),
+    vol_ratio_stat_char  = vol_stat  / vol_char,
+    vol_ratio_naive_char = vol_naive / vol_char,
+    lev_char  = mean(char_leverage,  na.rm = TRUE),
+    lev_stat  = mean(stat_leverage,  na.rm = TRUE),
+    lev_naive = mean(naive_leverage, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+annual_summary
+```
+
+```{r}
+n_factor_est_data <- rowSums(!is.na(res))
+n_factor_est_data <- gen_desc_statistics(n_factor_est_data)
+
+# The forecast sample
+n_forecast_data <- gen_desc_statistics(gmv_portfolios_daily$good_tickers_avail) 
+
+# difference between factor return estimation and effective sample of naive and statistical model
+sample_diff <- n_factor_est_data - n_forecast_data
+
+```
+
+
+```{r}
+
+df <- data.frame(
+  date      = as.Date(rownames(gmv_portfolios_daily)),
+  loss_diff = (gmv_portfolios_daily$characteristic**2) - (gmv_portfolios_daily$naive**2)
+)
+
+lambda <- 0.95
+fit    <- ses(df$loss_diff, alpha = 1 - lambda, h = 1)
+
+df$ses_smooth <- as.numeric(fitted(fit))
+
+c_n <- 
+  ggplot(df, aes(x = date)) +
+  geom_line(aes(y = ses_smooth), color = "black", linewidth = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = sprintf("Loss Difference  (%1$s - %2$s)", "Char2", "Naive2"),
+    y = "Difference",
+    x = "Year"
+  )
+
+c_n
+```
+
+```{r}
+tex_plot(c_n, filename = "charVSnaive.tex", width = 6, height = 4)
+```
+
+
+```{r}
+df <- data.frame(
+  date      = as.Date(rownames(gmv_portfolios_daily)),
+  loss_diff = (gmv_portfolios_daily$statistical**2) - (gmv_portfolios_daily$naive**2)
+)
+
+lambda <- 0.95
+fit    <- ses(df$loss_diff, alpha = 1 - lambda, h = 1)
+
+df$ses_smooth <- as.numeric(fitted(fit))
+
+s_n <- 
+  ggplot(df, aes(x = date)) +
+  geom_line(aes(y = ses_smooth), color = "black", linewidth = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = sprintf("Smoothed Loss Difference  (%1$s - %2$s, lambda = %3$s)", "Stat2", "Naive2",lambda),
+    y = "Difference",
+    x = "Year"
+  )
+
+s_n
+```
+```{r}
+tex_plot(s_n, filename = "statVSnaive.tex", width = 6, height = 4)
+```
+
+
+```{r}
+df <- data.frame(
+  date      = as.Date(rownames(gmv_portfolios_daily)),
+  loss_diff = (gmv_portfolios_daily$characteristic**2) - (gmv_portfolios_daily$statistical**2)
+)
+
+lambda <- 0.95
+fit    <- ses(df$loss_diff, alpha = (1 - lambda), h = 1)
+
+df$ses_smooth <- as.numeric(fitted(fit))
+
+c_s <- 
+  ggplot(df, aes(x = date)) +
+  geom_line(aes(y = ses_smooth), color = "black", linewidth = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = sprintf("Smoothed Loss Difference  (%1$s - %2$s, lambda = %3$s)", "Char2", "Stat2",lambda),
+    y = "Difference",
+    x = "Year"
+  )
+
+c_s
+```
+```{r}
+tex_plot(c_s, filename = "charVSstat.tex", width = 6, height = 4)
+```
+
+
+
+```{r}
+lambda <- 0.95
+smoothed_RV_char <- ses(gmv_portfolios_daily$characteristic**2, alpha = 1 - lambda, h = 1) %>% fitted() %>% as.numeric()
+smoothed_RV_stat <- ses(gmv_portfolios_daily$statistical**2, alpha = 1 - lambda, h = 1) %>% fitted() %>% as.numeric()
+smoothed_RV_naive <- ses(gmv_portfolios_daily$naive**2, alpha = 1 - lambda, h = 1) %>% fitted() %>% as.numeric()
+
+real_var <- data.frame(
+  date      = as.Date(rownames(gmv_portfolios_daily)),
+  char = smoothed_RV_char,
+  stat = smoothed_RV_stat,
+  naive = smoothed_RV_naive
+)
+
+
+rv_long <- real_var %>% pivot_longer(cols = -date, names_to  = "model", values_to = "value")
+
+cns <- 
+  ggplot(rv_long, aes(x = date, y = value, colour = model)) +
+  geom_line(alpha = 0.8, linewidth = 0.5) +
+  labs(
+    title = "Smoothed Daily Realized Variance (lambda = 0.95)",
+    x     = "Year",
+    y     = "RV",
+    colour = "Model"
+  ) +
+  theme_minimal()
+
+cns
+```
+```{r}
+tex_plot(cns, filename = "smoothed_rv.tex", width = 6, height = 4)
+```
+```{r}
+
+real_var <- data.frame(
+  date      = as.Date(rownames(gmv_portfolios_daily)),
+  char = gmv_portfolios_daily$characteristic**2,
+  stat = gmv_portfolios_daily$statistical**2,
+  naive = gmv_portfolios_daily$naive**2
+)
+
+
+rv_long <- real_var %>% pivot_longer(cols = -date, names_to  = "model", values_to = "value")
+
+cns_ins <- 
+  ggplot(rv_long, aes(x = date, y = value, colour = model)) +
+  geom_line(alpha = 0.8, linewidth = 0.5) +
+  labs(
+    title = "Daily Realized Variance",
+    x     = "Year",
+    y     = "Relized Variance",
+    colour = "Model"
+  ) +
+  theme_minimal()
+
+cns_ins
+```
+```{r}
+tex_plot(cns_ins, filename = "instant_rv.tex", width = 6, height = 4)
+```
+
+
+```{r}
+df <- data.frame(
+  date      = as.Date(rownames(gmv_portfolios_daily)),
+  factors_chosen = gmv_portfolios_daily$stat_N_factors
+)
+
+stat_n_fact <- 
+  ggplot(df, aes(date, factors_chosen)) +
+  geom_line() +
+  labs(
+    title = "Statistical Model: Daily Number of Factors Chosen",
+    y = "Factors",
+    x = "Year"
+  )
+
+stat_n_fact
+```
+
+```{r}
+tex_plot(stat_n_fact, filename = "stat_n_fact.tex", width = 6, height = 4)
+```
+
+
+```{r}
+dm.test(gmv_portfolios_daily$characteristic, gmv_portfolios_daily$naive, power = 2)
+dm.test(gmv_portfolios_daily$statistical, gmv_portfolios_daily$naive, power = 2)
+dm.test(gmv_portfolios_daily$characteristic, gmv_portfolios_daily$statistical, power = 2)
+```
+
+
+```{r}
+dm_CN <- dm.test(gmv_portfolios_daily$characteristic, gmv_portfolios_daily$naive,       power = 2)
+dm_SN <- dm.test(gmv_portfolios_daily$statistical,    gmv_portfolios_daily$naive,       power = 2)
+dm_CS <- dm.test(gmv_portfolios_daily$characteristic, gmv_portfolios_daily$statistical, power = 2)
+
+dm_table <- data.frame(
+  Models = c("Characteristic vs. Naive",
+                 "Statistical vs. Naive",
+                 "Characteristic vs. Statistical"),
+  `DM statistic` = c(dm_CN$statistic, dm_SN$statistic, dm_CS$statistic),
+  `p-value`      = c(dm_CN$p.value,   dm_SN$p.value,   dm_CS$p.value)
+)
+
+dm_table
+```
+```{r}
+
+gmv_portfolios_daily <- read.csv("gmv_portfolios_daily_v1.csv", row.names = 1)
+
+dm_CS <- dm.test(gmv_portfolios_daily$characteristic, 
+                 gmv_portfolios_daily$statistical, power = 2)
+
+dm_table <- data.frame(
+  Models = c( "Characteristic vs. Statistical"),
+  `DM statistic` = c(dm_CS$statistic),
+  `p-value`      = c(dm_CS$p.value)
+)
+
+dm_table
+```
+
+
+
+```{r}
+gmv_portfolios_daily$characteristic
+```
+
+
+```{r}
+annual_vol_char = sd(gmv_portfolios_daily$characteristic) * sqrt(252)
+annual_vol_stat = sd(gmv_portfolios_daily$statistical) * sqrt(252)
+annual_vol_naive = sd(gmv_portfolios_daily$naive) * sqrt(252)
+
+cat("Characteristic Annual Vol 2025:", annual_vol_char, "\n")
+cat("Statistical Annual Vol 2025:", annual_vol_stat, "\n")
+cat("Naive Annual Vol 2025:", annual_vol_naive, "\n")
+```
+
+
+
+```{r}
+gmv_portfolios_daily <- read.csv("gmv_portfolios_daily.csv", row.names = 1)
+
+loss_diff <- data.frame(
+  row.names = rownames(gmv_portfolios_daily),
+  `CN (Diff)` = gmv_portfolios_daily$characteristic**2 - gmv_portfolios_daily$naive**2,
+  `SN (Diff)` = gmv_portfolios_daily$statistical**2 - gmv_portfolios_daily$naive**2,
+  `CS (DIFF)` = gmv_portfolios_daily$characteristic**2 - gmv_portfolios_daily$statistical**2
+)
+
+# Check if loss-differentials are at last stationary
+adf_factor <- function(x, k = 0) {
+  x <- as.numeric(x)
+  x <- x[is.finite(x)]
+  test <- adf.test(x, k = k)
+  c(`t-statistic` = unname(test$statistic),
+    `p-value`   = test$p.value)
+}
+
+
+adf_results <- t(apply(loss_diff, 2, adf_factor, k = 0)) %>% as.data.frame()
+
+```
+```{r}
+rownames(gmv_portfolios_daily)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
