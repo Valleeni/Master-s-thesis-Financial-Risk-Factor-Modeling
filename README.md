@@ -6,4 +6,4 @@ This repository contains all code used to create, generate, test and evaluate mo
 
 The jupyternotebook contains code that parses and transforms data to be fed in to statistical models at-the-ready. The use of the term "statistical models" is unrelated to the context of the master's thesis, and is a broad term used to unite all predictive and/or inferential models (e.g. regression, PCA, classifiers, Neural Nets, etc.) under one category. 
 
-$\right arrow$
+$\rightarrow$
