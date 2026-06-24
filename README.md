@@ -18,3 +18,7 @@ Parse and query JSON data from API $\rightarrow$ Transform and clean data to use
 There is somewhat overlap from data transformation here, where the necessary alterations regarding data modeling force structure that aims to maintain integrity and model operatability. For example, for the iterated WLS-regressions, it is much easier to load 12 time-series features and turn them into 1 756 cross-sections in program rather, than creating 1 756 seperate cross-sections as individual files. 
 
 Other than that, the R-code includes WLS-regressions, SVD-based PCA, model specific exponential weighting schemes, hypothesis tests, plots and descriptive statistics. The descriptive statistics were mainly used to monitor and evaluate the integrity of model construction and hypothesis tests.
+
+## Extended information...
+
+Extensive information regarding the data and model construction can be viewed in the main Master's thesis document.
